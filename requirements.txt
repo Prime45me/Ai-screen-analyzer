@@ -1,0 +1,11 @@
+mss
+Pillow
+opencv-python
+numpy
+google-generativeai
+PyQt6
+python-dotenv
+pyinstaller
+easyocr
+torch
+torchvision
