@@ -9,3 +9,5 @@ pyinstaller
 easyocr
 torch
 torchvision
+pynput
+pyperclip

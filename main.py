@@ -11,89 +11,131 @@ import capture
 import utils
 import vision
 from overlay import OverlayWindow
+from hotkey import HotkeyManager
 
 # Signal wrapper class for thread-safe UI updates
 class TextUpdateSignal(QObject):
     update_text_signal = pyqtSignal(str)
 
-def capture_loop(signal_obj):
+# -------------------------------------------------------------------
+# Module-level state (shared between capture_loop and on_hotkey_toggle)
+# -------------------------------------------------------------------
+is_active: bool = True
+last_active_time: float = time.time()
+
+# References set in main() before the loop thread starts
+_overlay: OverlayWindow = None
+_signal_obj: TextUpdateSignal = None
+
+
+def on_hotkey_toggle():
+    """Toggle between Active and Standby states."""
+    global is_active, last_active_time
+    is_active = not is_active
+    if is_active:
+        last_active_time = time.time()
+        _overlay.show()
+        _overlay.set_status("active")
+        _signal_obj.update_text_signal.emit("▶ Assistant active")
+    else:
+        _overlay.set_status("standby")
+        _signal_obj.update_text_signal.emit("⏸ Assistant paused")
+        # After 1.5s fade-out delay, clear and hide the panel
+        def _deferred_hide():
+            time.sleep(1.5)
+            _signal_obj.update_text_signal.emit("")  # triggers clear_text via ''
+        threading.Thread(target=_deferred_hide, daemon=True).start()
+
+
+def capture_loop():
     """
-    Background loop that handles screen capture, vision analysis, and signaling.
-    Uses a ThreadPoolExecutor for vision analysis tasks.
+    Background loop: captures screen, reads clipboard, sends to Gemini, updates overlay.
+    When is_active is False, idles at 0.2s poll to keep CPU near zero.
     """
     logger = utils.setup_logger("App")
     logger.info("Application starting...")
-    
-    # Executor for vision tasks
-    executor = ThreadPoolExecutor(max_workers=2)
-    
-    prev_image = None
-    
-    while True:
-        try:
-            start_time = time.time()
-            
-            # 1. Capture and downscale image
-            logger.info("Capturing screen...")
-            image = capture.capture_screen()
-            
-            # 2. Check if screen changed enough to warrant an API call
-            if not utils.has_screen_changed(prev_image, image, threshold=2.0):
-                logger.info("Screen hasn't changed significantly. Skipping API call.")
-                
-                # Sleep and continue
-                elapsed = time.time() - start_time
+
+    global is_active, last_active_time
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        while True:
+            try:
+                if not is_active:
+                    # Auto-pause: simply poll until toggled back on
+                    time.sleep(0.2)
+                    continue
+
+                start = time.time()
+
+                # 1. Capture and encode image
+                logger.info("Capturing screen...")
+                image = capture.capture_screen()
+                b64 = utils.encode_image_to_base64(image)
+
+                # 2. Read clipboard for highlighted text context
+                highlighted = utils.get_highlighted_text()
+
+                # 3. Submit to thread pool
+                logger.info("Sending to API...")
+                future = executor.submit(vision.analyze_screenshot, image, highlighted)
+                text = future.result()
+
+                # 4. Emit text to overlay
+                logger.info(f"Analysis complete: {text[:50]}...")
+                _signal_obj.update_text_signal.emit(text)
+
+                # 5. Respect capture interval throttle
+                elapsed = time.time() - start
                 time.sleep(max(0, config.CAPTURE_INTERVAL - elapsed))
-                continue
-                
-            prev_image = image
-            
-            # 3. Submit image directly to executor for Vision API analysis
-            logger.info("Sending to Vision API...")
-            future = executor.submit(vision.analyze_screenshot, image)
-            text = future.result()
-            
-            # 4. Emit the parsed text to the overlay
-            logger.info(f"Analysis complete: {text[:50]}...")
-            signal_obj.update_text_signal.emit(text)
-            
-            # 5. Timing logic: ensures interval between captures
-            elapsed = time.time() - start_time
-            sleep_duration = max(0, config.CAPTURE_INTERVAL - elapsed)
-            
-            if sleep_duration > 0:
-                time.sleep(sleep_duration)
-                
-        except Exception as e:
-            logger.error(f"Error in capture loop: {e}")
-            time.sleep(config.CAPTURE_INTERVAL)
+
+            except Exception as e:
+                logger.error(f"Error in capture loop: {e}")
+                time.sleep(config.CAPTURE_INTERVAL)
+
 
 def main():
+    global _overlay, _signal_obj
+
     # Allow terminal interruption
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-    
+
     # 1. Initialize QApplication
     app = QApplication(sys.argv)
-    
+
     # 2. Create signal object
-    signal_obj = TextUpdateSignal()
-    
+    _signal_obj = TextUpdateSignal()
+
     # 3. Initialize and show OverlayWindow fullscreen
-    overlay = OverlayWindow()
-    overlay.showFullScreen()
-    
-    # 4. Connect signal to overlay method
-    signal_obj.update_text_signal.connect(overlay.update_text)
-    
-    # 5. Start capture loop in daemon thread
-    loop_thread = threading.Thread(target=capture_loop, args=(signal_obj,), daemon=True)
+    _overlay = OverlayWindow()
+    _overlay.showFullScreen()
+
+    # 4. Set initial status
+    _overlay.set_status("active")
+
+    # 5. Connect signal to overlay update_text (empty string calls clear_text)
+    def _handle_update(text: str):
+        if text:
+            _overlay.update_text(text)
+        else:
+            _overlay.clear_text()
+
+    _signal_obj.update_text_signal.connect(_handle_update)
+
+    # 6. Wire hotkey manager
+    hotkey_manager = HotkeyManager(on_toggle=on_hotkey_toggle)
+    hotkey_manager.start()
+
+    # 7. Start capture loop in daemon thread
+    loop_thread = threading.Thread(target=capture_loop, daemon=True)
     loop_thread.start()
-    
-    # 6. Block on application event loop
+
+    # 8. Block on application event loop
     try:
         sys.exit(app.exec())
     except KeyboardInterrupt:
+        hotkey_manager.stop()
         sys.exit(0)
+
 
 if __name__ == "__main__":
     main()

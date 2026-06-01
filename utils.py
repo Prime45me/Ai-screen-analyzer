@@ -7,6 +7,7 @@ import PIL.Image
 import config
 
 import numpy as np
+import pyperclip
 
 def encode_image_to_base64(image: PIL.Image.Image) -> str:
     """
@@ -54,3 +55,21 @@ def setup_logger(name: str) -> logging.Logger:
         force=True
     )
     return logging.getLogger(name)
+
+def get_highlighted_text() -> str | None:
+    """
+    Reads the system clipboard using pyperclip.
+    Returns the clipboard text if it is non-empty and <= 2000 characters.
+    Returns None if the clipboard is empty, non-text, or exceeds the length limit.
+    Never raises — all exceptions are caught internally.
+    """
+    try:
+        text = pyperclip.paste()
+        if not isinstance(text, str):
+            return None
+        text = text.strip()
+        if text and len(text) <= 2000:
+            return text
+        return None
+    except Exception:
+        return None

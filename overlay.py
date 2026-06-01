@@ -1,5 +1,6 @@
 from PyQt6.QtWidgets import QWidget, QLabel, QVBoxLayout, QApplication, QFrame
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve
+from PyQt6.QtGui import QFont
 import config
 
 class OverlayWindow(QWidget):
@@ -73,6 +74,23 @@ class OverlayWindow(QWidget):
         self.setWindowOpacity(0.0)
         self.panel.hide()
 
+        # Status indicator — fixed top-right corner
+        self.status_label = QLabel("", self)
+        self.status_label.setFont(QFont("Segoe UI", 12))
+        self.status_label.setStyleSheet(
+            "color: #4ade80;"
+            "background: rgba(0, 0, 0, 120);"
+            "border-radius: 8px;"
+            "padding: 4px 10px;"
+        )
+        self.status_label.adjustSize()
+        if primary_screen:
+            screen_geom = primary_screen.geometry()
+            self.status_label.move(
+                screen_geom.width() - self.status_label.width() - 20, 20
+            )
+        self.status_label.show()
+
     def _format_text(self, text: str) -> str:
         """
         Parses structured text and applies color-coded HTML formatting.
@@ -128,3 +146,32 @@ class OverlayWindow(QWidget):
             self.animation.setEndValue(0.0)
             self.animation.finished.connect(self.panel.hide)
             self.animation.start()
+
+    def set_status(self, state: str) -> None:
+        """
+        Updates the top-right status indicator.
+        state='active'  → '● Active'  in green  (#4ade80)
+        state='standby' → '⏸ Standby' in grey   (#9ca3af)
+        """
+        if state == "active":
+            text = "● Active"
+            color = "#4ade80"
+        else:
+            text = "⏸ Standby"
+            color = "#9ca3af"
+
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(
+            f"color: {color};"
+            "background: rgba(0, 0, 0, 120);"
+            "border-radius: 8px;"
+            "padding: 4px 10px;"
+        )
+        self.status_label.adjustSize()
+        # Re-anchor to top-right after size change
+        primary_screen = QApplication.primaryScreen()
+        if primary_screen:
+            screen_geom = primary_screen.geometry()
+            self.status_label.move(
+                screen_geom.width() - self.status_label.width() - 20, 20
+            )
